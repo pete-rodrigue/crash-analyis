@@ -1,0 +1,233 @@
+---
+title: 'Quick facts: pedestian-involved crashes in DC'
+author: "pete rodrigue"
+date: "2024-10-30"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# please set your working dir. to the root folder before running this script.
+
+# import libraries:
+library(readr)
+library(dplyr)
+library(lubridate)
+library(plotly)
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+
+# load crash data:
+crashes <- readr::read_csv("Crashes_in_DC.csv",
+                           col_types = 
+                             cols(
+                               FROMDATE = col_datetime(format = "%Y/%m/%d %H:%M:%S+00"),
+                               REPORTDATE = col_datetime(format = "%Y/%m/%d %H:%M:%S+00")
+                               ),
+                           )
+
+# are going to focus on pedestrian and cyclist fatal crashes, 
+# to narrow the scope of the analysis
+# to something I can more tractably analyze in two hours. 
+# This is purely due to the time constraint! If we were doing this analysis
+# in a real setting, we would want to think carefully about 
+# our research question, what types of crashes we wanted to analyze, and how.
+
+crashes <-
+  crashes %>%
+  filter(MAJORINJURIES_PEDESTRIAN > 0 | 
+           MINORINJURIES_PEDESTRIAN > 0 | 
+           UNKNOWNINJURIES_PEDESTRIAN > 0 |
+           FATAL_PEDESTRIAN > 0)
+
+# create variables for the year and month of the crash
+crashes$year <- lubridate::year(crashes$FROMDATE)
+crashes$month <- lubridate::month(crashes$FROMDATE)
+
+# just as a quick check, see if we can replicate the table in the prompt.
+# I'm assuming "Pedestrian Traffic Injuries, 2018-2022 (April)" in the table
+# means "from Jan 1 2018 to April 30 2022", but it's not totally clear.
+# sorry if I'm misinterpreting this!
+# at any rate, I tried a couple different date combinations and I couldn't
+# get results that matched the table. This raises some questions for me
+# about where the data is coming from, which date columns we should be using
+# ("REPORTDATE"? "FROMDATE"?) and the accuracy of those data columns. 
+# Maybe y'all have a more accurate data set than what's online?
+crashes %>%
+  filter(
+    (REPORTDATE >= lubridate::mdy("01-01-2018")) & 
+      (REPORTDATE <= lubridate::mdy("04-30-2022"))
+         ) %>%
+  group_by(WARD) %>%
+  summarise(
+    ped_injuries = sum(MAJORINJURIES_PEDESTRIAN, na.rm = T) +
+                   sum(MINORINJURIES_PEDESTRIAN, na.rm = T) +
+                   sum(UNKNOWNINJURIES_PEDESTRIAN, na.rm = T),
+    ped_fatalities = sum(FATAL_PEDESTRIAN, na.rm=T)
+    )
+
+# I'm going to proceed to just use the data from the prompt for some of the
+# analysis. for the more detailed analysis, i'll use the data downloaded from
+# Open Data DC.
+
+# load the table data from the prompt
+table_data <- readr::read_csv("https://docs.google.com/spreadsheets/d/e/2PACX-1vRkG0FMQyepc1-pQX7j6yk5v_OIUH9YE6iLW378bwDYvH4Jan-5wr5Pnj_cOfbgS5-DN1oNADuC5pT3/pub?gid=0&single=true&output=csv")
+
+# calculate injuries and deaths per population
+table_data$injuries_per_thousand <-
+  table_data$ped_injury2018_2022_april / table_data$pop2022 * 1000
+table_data$deaths_per_thousand <-
+  table_data$ped_fatal2018_2022_april / table_data$pop2022 * 1000
+```
+
+# Purpose of this document
+
+The purpose of this document is to highlight high-level facts about crashes that injured or killed pedestrians in DC during the last several years. The document will not focus on crashes that injured motorists or bicyclists. (Such crashes may be included in the analysis, however, if those crashes also happened to involve pedestrian injuries or deaths).
+
+# Caveats
+
+The data presented in this document should be interpreted with extreme caution, because,
+
+1. The analysis was conducted in under two hours. There could be significant analysis errors.
+2. I am not well-versed in the collection or interpretation of this data. I could be misinterpreting this data. I am likely unaware of significant gaps, shortcomings, or errors in the data.
+
+# Findings
+
+## Wards 3 and 4 have fewer pedestrian injuries, Ward 2 has the most
+
+The bar chart below shows the number of pedestrian injuries between 2018 and 2022 by ward. Injuries seem to be especially high in ward 2. The relative differences between the wards are largely unchanged if we divide the number of injuries by the ward population. It is possible that some of the injured pedestrians in ward 2 are tourists visiting from out of town. This analysis doesn't account for the number of pedestrian-miles-walked in the ward during the time period, or differentiate between DC residents and visitors.
+
+```{r, echo=F}
+plot_ly(table_data, x = ~ward, y = ~ped_injury2018_2022_april, type = 'bar') %>% 
+  layout(title = "Wards 3 and 4 have lower numbers of pedestrian injuries than other wards",
+         xaxis = list(title = "Ward"),
+         yaxis = list(title = "Pedestrian-injuring crashes between 2018 and 2022"))
+```
+
+
+## Wards 5 and 8 have the most pedestian deaths
+
+Ward 2 has the highest number of pedestrian injuries, but wards 5 and 8 have the highest numbers of pedestrian deaths. Again, these relative differences hold even after accounting for ward population. This suggests that crashes in wards 5 and 8 tend to be more deadly than in ward 2, for example.
+
+```{r, echo=F}
+plot_ly(table_data, x = ~ward, y = ~ped_fatal2018_2022_april, type = 'bar') %>% 
+  layout(title = "Wards 5 and 8 have the highest numbers of pedestrian deaths",
+         xaxis = list(title = "Ward"),
+         yaxis = list(title = "Pedestrian deaths between 2018 and 2022"))
+```
+
+# There seem to be more pedestrian-involved crashes downtown and near intersections
+
+The heatmap below shows where crashes that injure pedestrians tended to occur over the 16 years, based on the CrashesInDC data. The red dots show crashes that killed pedestrians. If you hover over the points, you can see the year in which that person died.
+
+It looks like these crashes tend to occur near intersections (perhaps while people are trying to cross the street). By contrast, these crashes seem less likely to occur near the middle of blocks. Many crashes seem to occur downtown, perhaps because there are more people walking there.
+
+```{r, echo=F}
+toplot <- crashes[crashes$year > 2007 & is.na(crashes$LONGITUDE)==F & is.na(crashes$year)==F,]
+toplot %>%
+  leaflet() %>%
+  addTiles() %>%
+  addHeatmap(
+    lng = toplot$LONGITUDE, 
+    lat = toplot$LATITUDE, blur = 40, max = 2, radius = 15) %>%
+  addCircleMarkers(
+    lng = toplot$LONGITUDE[toplot$FATAL_PEDESTRIAN > 0], 
+    lat = toplot$LATITUDE[toplot$FATAL_PEDESTRIAN > 0],
+    color='red',
+    stroke=F,
+    radius=5,
+    fillOpacity=.5,
+    label=as.character(toplot$year[toplot$FATAL_PEDESTRIAN > 0]))
+```
+
+
+# Could crashes be more likely to occur on streets with faster traffic?
+
+The analysis below draws 20 meter buffers around each crash, then spatially joins each crash to another spatial data set of roads in DC. The road data set contains information about the speed limit on each street. With additional time, this analysis could be much improved, to account for the prevalence of each speed limit in the District, for example. This could help answer questions such as "are there disproportionately more crashes on 30-mph streets, given the number of pedestrian-car interactions on those streets?"
+
+Note that I have omitted 20-mph streets from the chart below, because DDOT appears to code the speed limit "20-mph" onto street segments with missing information.
+
+
+```{r, echo=F, error=F, message=F}
+# load the roadway shapefile. I could be totally using this dataset wrong!
+# but this is an example of something I might want to look at.
+roads <- sf::st_read("./Roadway_SubBlock/Roadway_SubBlock.shp")
+
+# test, to make sure it plots ok:
+# plot(sf::st_geometry(roads[1:5000,]))
+
+# convert the crashes data set to an sf object:
+projcrs <- "+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0"
+crashes_sf <- st_as_sf(x = crashes,                         
+           coords = c("LONGITUDE", "LATITUDE"),
+           crs = projcrs)
+
+# test this worked ok:
+# plot(st_geometry(crashes_sf))
+
+# lets see if roads where pedestrians are injured or killed
+# have faster speed limits or are wider
+
+# first, subset the data to just 2018-2022, to make things run faster
+# (doing this on my laptop would take too long w/ all the data)
+crashes_sf <-
+  crashes_sf %>% 
+  filter(year %in% c(2018, 2019, 2020, 2021, 2022))
+
+# next, create a 20 meter buffer around each crash location, so we can
+# merge it onto the road segment data set
+crashes_sf_buffer <- st_buffer(crashes_sf, 20)
+
+# convert crashes CRS to match roads CRS:
+crashes_sf_buffer <- st_transform(crashes_sf_buffer, crs = sf::st_crs(roads))
+
+# now spatial left join the crashes to the roadway segments:
+joined_data <- 
+  sf::st_join(x=crashes_sf_buffer, 
+              y=roads, 
+              join = st_intersects, 
+              left=TRUE)
+joined_data$WARD_ID <- as.numeric(joined_data$WARD_ID)
+
+# take the median value within the buffer:
+fatalities <-
+  sf::st_drop_geometry(joined_data) %>%
+  filter(FATAL_PEDESTRIAN > 0) %>%
+  group_by(CRIMEID) %>%
+  summarise(speedlimit = median(SPEEDLIM_2, na.rm=T),
+            travel_lane_width = median(TOTALTRA_1, na.rm=T),
+            ward = median(WARD_ID, na.rm=T))
+
+all_ped_crashes <-
+  sf::st_drop_geometry(joined_data) %>%
+  group_by(CRIMEID) %>%
+  summarise(speedlimit = median(SPEEDLIM_2, na.rm=T),
+            travel_lane_width = median(TOTALTRA_1, na.rm=T),
+            ward = median(WARD_ID, na.rm=T))
+
+
+limit_graph <-
+  all_ped_crashes %>%
+  group_by(speedlimit) %>%
+  summarise(count = n()) %>%
+  filter(is.na(speedlimit)==F)
+
+lane_width_graph <-
+  all_ped_crashes %>%
+  group_by(travel_lane_width) %>%
+  summarise(count = n()) %>%
+  filter(is.na(travel_lane_width)==F) %>%
+  filter(travel_lane_width > 0)
+```
+
+```{r, echo=F}
+plot_ly(limit_graph[limit_graph$speedlimit != 20,], x = ~speedlimit, y = ~count, type = 'bar') %>% 
+  layout(title = "Streets with 15 mph speed limits may have\nfewer crashes, but more analysis is needed",
+         xaxis = list(title = "Median speed limit on streets within 20 meters of the crash"),
+         yaxis = list(title = "Number of crashes"))
+```
+
+
+
+
